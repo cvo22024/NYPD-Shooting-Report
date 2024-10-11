@@ -1,0 +1,149 @@
+---
+title: "NYPD Shooting Analysis"
+author: "CVo2"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+This report analyzes the NYPD shooting incident dataset to explore patterns in time of day, day of the week, and location of incidents. The goal is to provide insights into when and where shooting incidents are most likely to occur, and whether location influences the likelihood of incidents happening at night
+
+# Set up and load library
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+```
+
+# Start an rmd and inport dataset
+```{r NYPD_imported}
+nypd_data = read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+summary(nypd_data)
+
+
+```
+
+# Data Preparation and Cleaning
+```{r tidy_data}
+# Remove column
+nypd_data_clean = nypd_data %>% 
+  select(-c(X_COORD_CD:Lon_Lat, PRECINCT, JURISDICTION_CODE))
+# Change format
+nypd_data_clean = nypd_data_clean %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+nypd_data_clean <- nypd_data_clean %>%
+  mutate(OCCUR_TIME = hms(OCCUR_TIME))
+# After remove column and change format, show the summary
+summary(nypd_data_clean)
+```
+
+# Visualization & Analysis 1: Shooting day of the week / Time of Day
+```{r }
+nypd_data_clean %>%
+  mutate(Weekday = wday(OCCUR_DATE, label = TRUE), Hour = hour(OCCUR_TIME)) %>%
+  group_by(Weekday, Hour) %>%
+  summarize(Incidents = n()) %>%
+  ggplot(aes(x = Hour, y = Incidents, fill = Weekday)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Shooting Incidents by Hour of Day and Weekday")
+```
+
+**Analysis:** Late-night hours on weekends are the most active times for shooting incidents, with a particular concentration between midnight and early morning. This may suggest that social activities or certain environmental factors contribute to the increased number of incidents during these periods.
+
+# Visualization and Analysis 2 : Location-Specific Analysis
+
+Based on Analysis 1, we see that shootings peak during late-night hours, especially on weekends. However, knowing when shootings occur isn’t enough—we also need to know where they happen. Analysis 2 focuses on identifying the most common locations for shootings, helping us understand the environmental factors at play and where targeted interventions might be needed.
+
+```{r location}
+nypd_data_clean %>%
+  group_by(LOCATION_DESC) %>%
+  summarize(Incidents = n()) %>%
+  arrange(desc(Incidents)) %>%
+  top_n(10, Incidents) %>% # Display only the top 10 locations
+  ggplot(aes(x = reorder(LOCATION_DESC, Incidents), y = Incidents)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() + # Flip coordinates for better readability
+  labs(
+    title = "Top 10 Locations for Shooting Incidents",
+    x = "Location",
+    y = "Number of Incidents"
+   ) +
+  theme_minimal()
+```
+
+
+**Analysis:**
+
+The analysis shows that a significant number of incidents fall under the category "NA," indicating missing or incomplete location data, which affects the clarity of location-based insights and suggests a need for data collection improvements. Multi-dwelling residences, particularly public housing and apartment buildings, are the most frequent known locations for shooting incidents, highlighting the need for targeted safety interventions in these densely populated areas. Other significant locations, such as private houses, grocery/bodegas, and bars/nightclubs, also see notable incidents, suggesting that both residential and public spaces require varied strategies to address the issue effectively.
+
+
+# Model
+
+After identifying the key locations where shooting incidents occur, the next logical step is to examine how these locations influence the likelihood of incidents happening during late-night hours. By using a logistic regression model, we can determine which locations are most strongly associated with late-night shootings. This analysis will help us understand not only where shootings are occurring but also when they are most likely to happen, providing deeper insights into potential patterns and allowing for more targeted interventions based on both time and location.
+
+
+```{r model}
+# Add a binary variable for late-night (Yes/No)
+nypd_data_clean <- nypd_data_clean %>%
+  mutate(Late_Night = ifelse(hour(OCCUR_TIME) >= 22 | hour(OCCUR_TIME) < 5, 1, 0))
+
+# Fit a logistic regression model to see if the location influences late-night shootings
+model <- glm(Late_Night ~ LOCATION_DESC, data = nypd_data_clean, family = binomial)
+summary(model)
+
+```
+
+
+**What we can tell from the model: **
+
+Locations like bars, nightclubs, multi-dwelling residences (public housing and apartment buildings), and restaurants/diners are strong predictors of late-night shootings. These findings can help target safety interventions in these areas, especially during high-risk hours.
+
+Locations such as ATMs, banks, and gas stations do not appear to significantly contribute to late-night shootings, likely because they are not typical late-night gathering spots.
+
+The model reveals some limitations due to missing data, which should be addressed for future analysis.
+
+# Predicted Probabilities of Late-Night Shootings by Location
+
+After fitting the logistic regression model, it's important to move beyond the coefficients to understand the practical impact of each location on the likelihood of late-night shootings. By predicting the probabilities of a late-night incident occurring at different locations, we can quantify the relative risk across various environments. This step helps identify the riskiest locations in practical terms, allowing us to pinpoint where late-night shootings are most likely to occur. Visualizing these probabilities gives us a clearer picture of which locations require targeted interventions based on their predicted likelihood of incidents.
+```{r }
+# Create a new dataset with the unique locations for prediction
+locations <- unique(nypd_data_clean$LOCATION_DESC)
+prediction_data <- data.frame(LOCATION_DESC = locations)
+
+# Get predicted probabilities from the logistic regression model
+prediction_data$predicted_prob <- predict(model, newdata = prediction_data, type = "response")
+
+# Select the top 10 locations with the highest predicted probabilities
+top_10_predictions <- prediction_data %>%
+  arrange(desc(predicted_prob)) %>%
+  top_n(10, predicted_prob)
+
+# Plot predicted probabilities for the top 10 locations
+ggplot(top_10_predictions, aes(x = reorder(LOCATION_DESC, predicted_prob), y = predicted_prob)) +
+  geom_col(fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Top 10 Locations by Predicted Probability of Late Night Shootings",
+       x = "Location",
+       y = "Predicted Probability (Late Night Incident)") +
+  theme_minimal()
+
+
+```
+The chart highlights the Top 10 locations with the highest predicted probabilities of late-night shootings. PHOTO/COPY STORE, SCHOOL, and BAR/NIGHT CLUB show the highest risks, with probabilities close to 1.0. Locations like VIDEO STORE, SOCIAL CLUB, and RESTAURANT/DINER also have elevated risks, likely due to late-night activity. Some unexpected locations, like CANDY STORE and GYM, appear, which may suggest data irregularities or specific local contexts. These insights can help target safety interventions during high-risk times at key locations.
+
+# Conclusion: 
+
+This analysis of NYPD shooting incidents reveals key patterns in when and where shootings are most likely to occur. Late-night hours, especially on weekends, are high-risk times, and locations like multi-dwelling residences (public housing, apartments) and bars/nightclubs are the most common hotspots. Logistic regression provided further insights by predicting the probability of late-night shootings at different locations, helping identify areas for targeted interventions.
+
+However, the analysis faces limitations due to missing data and limited predictor variables. Addressing these gaps in future studies will improve the accuracy and reliability of the findings.
+
+# Potential Biases and Limitations:
+Missing Data: A significant number of incidents have missing location information (NA), which could introduce bias if certain locations are systematically underreported. Improving location data collection would enhance analysis.
+
+Time Coverage: The dataset may lack broader time coverage or exclude seasonal trends, limiting the generalization of results. Expanding the timeframe could reveal deeper patterns.
+
+Limited Predictors: The analysis focuses on time and location but excludes other factors like socioeconomic conditions. Adding more variables in future models would provide a fuller picture.
+
+Model Assumptions: The logistic regression assumes a linear relationship, which may not fully capture the complexity of shooting incidents. Exploring non-linear models or interactions could improve the analysis.
